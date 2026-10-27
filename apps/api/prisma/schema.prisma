@@ -1,0 +1,221 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum StatusRegistro {
+  ativo
+  inativo
+}
+
+enum Perfil {
+  colaborador
+  gestor
+  administrador_tenant
+  administrador_plataforma
+}
+
+enum Prioridade {
+  baixa
+  media
+  alta
+  urgente
+}
+
+model Tenant {
+  id                       String         @id @default(uuid()) @db.Uuid
+  nome                     String         @db.VarChar(255)
+  slug                     String         @unique @db.VarChar(120)
+  status                   StatusRegistro
+  dataCriacao              DateTime       @default(now()) @map("data_criacao") @db.Timestamptz(6)
+  administradorCriadorId   String         @map("administrador_criador_id") @db.Uuid
+  dataUltimaAtivacao       DateTime?      @map("data_ultima_ativacao") @db.Timestamptz(6)
+  dataUltimaDesativacao    DateTime?      @map("data_ultima_desativacao") @db.Timestamptz(6)
+
+  administradorCriador     Usuario                 @relation("TenantCriador", fields: [administradorCriadorId], references: [id])
+  usuarios                 Usuario[]               @relation("TenantUsuarios")
+  niveisHierarquicos       NivelHierarquico[]
+  tarefas                  Tarefa[]
+  historicoStatusTarefas   HistoricoStatusTarefa[]
+  trilhaAuditoria          TrilhaAuditoria[]
+
+  @@index([status], map: "idx_tenants_status")
+  @@index([dataCriacao], map: "idx_tenants_data_criacao")
+  @@map("tenants")
+}
+
+model NivelHierarquico {
+  id                 String    @id @default(uuid()) @db.Uuid
+  tenantId           String    @map("tenant_id") @db.Uuid
+  nome               String    @db.VarChar(120)
+  profundidade       Int       @map("profundidade")
+  dataCriacao        DateTime  @default(now()) @map("data_criacao") @db.Timestamptz(6)
+  criadorId          String    @map("criador_id") @db.Uuid
+  dataUltimaEdicao   DateTime? @map("data_ultima_edicao") @db.Timestamptz(6)
+  ultimoEditorId     String?   @map("ultimo_editor_id") @db.Uuid
+
+  tenant             Tenant    @relation(fields: [tenantId], references: [id])
+  criador            Usuario   @relation("NivelCriador", fields: [criadorId], references: [id])
+  ultimoEditor       Usuario?  @relation("NivelUltimoEditor", fields: [ultimoEditorId], references: [id])
+  usuarios           Usuario[] @relation("UsuarioNivel")
+
+  @@unique([tenantId, nome], map: "idx_niveis_tenant_nome")
+  @@index([tenantId, profundidade], map: "idx_niveis_tenant_profundidade")
+  @@map("niveis_hierarquicos")
+}
+
+model Usuario {
+  id                     String         @id @default(uuid()) @db.Uuid
+  tenantId               String         @map("tenant_id") @db.Uuid
+  nomeCompleto           String         @map("nome_completo") @db.VarChar(255)
+  email                  String         @db.VarChar(255)
+  senhaHash              String         @map("senha_hash") @db.VarChar(255)
+  nivelHierarquicoId     String         @map("nivel_hierarquico_id") @db.Uuid
+  perfil                 Perfil
+  status                 StatusRegistro
+  dataCriacao            DateTime       @default(now()) @map("data_criacao") @db.Timestamptz(6)
+  criadorId              String?        @map("criador_id") @db.Uuid
+  dataUltimaEdicao       DateTime?      @map("data_ultima_edicao") @db.Timestamptz(6)
+  ultimoEditorId         String?        @map("ultimo_editor_id") @db.Uuid
+  dataUltimaAtivacao     DateTime?      @map("data_ultima_ativacao") @db.Timestamptz(6)
+  dataUltimaDesativacao  DateTime?      @map("data_ultima_desativacao") @db.Timestamptz(6)
+
+  tenant                 Tenant                  @relation("TenantUsuarios", fields: [tenantId], references: [id])
+  nivelHierarquico       NivelHierarquico        @relation("UsuarioNivel", fields: [nivelHierarquicoId], references: [id])
+  criador                Usuario?                @relation("UsuarioCriador", fields: [criadorId], references: [id])
+  criados                Usuario[]               @relation("UsuarioCriador")
+  ultimoEditor           Usuario?                @relation("UsuarioUltimoEditor", fields: [ultimoEditorId], references: [id])
+  editados               Usuario[]               @relation("UsuarioUltimoEditor")
+
+  tenantsProvisionados   Tenant[]                @relation("TenantCriador")
+  niveisCriados          NivelHierarquico[]      @relation("NivelCriador")
+  niveisEditados         NivelHierarquico[]      @relation("NivelUltimoEditor")
+  tarefasResponsavel     Tarefa[]                @relation("TarefaResponsavel")
+  tarefasCriadas         Tarefa[]                @relation("TarefaCriador")
+  tarefasEditadas        Tarefa[]                @relation("TarefaUltimoEditor")
+  transicoesExecutadas   HistoricoStatusTarefa[]
+  tokensRecuperacao      TokenRecuperacaoSenha[]
+  acoesAuditadas         TrilhaAuditoria[]
+
+  @@unique([tenantId, email], map: "idx_usuarios_tenant_email")
+  @@index([tenantId, status], map: "idx_usuarios_tenant_status")
+  @@index([tenantId, nivelHierarquicoId], map: "idx_usuarios_tenant_nivel_hierarquico")
+  @@index([dataCriacao], map: "idx_usuarios_data_criacao")
+  @@map("usuarios")
+}
+
+/// Colunas do quadro Kanban como entidades independentes (feature 23628, grupo
+/// "Modelo de Dados Extensível para Colunas"). `tenantId` nulo = coluna do sistema,
+/// compartilhada por todos; a coluna existe para suportar personalização por tenant
+/// numa versão futura sem reestruturar o modelo.
+model StatusTarefa {
+  id           String   @id @default(uuid()) @db.Uuid
+  chave        String   @unique @db.VarChar(60)
+  rotulo       String   @db.VarChar(60)
+  ordem        Int
+  ehConclusivo Boolean  @default(false) @map("eh_conclusivo")
+  tenantId     String?  @map("tenant_id") @db.Uuid
+  dataCriacao  DateTime @default(now()) @map("data_criacao") @db.Timestamptz(6)
+
+  tarefas             Tarefa[]
+  historicoAnterior   HistoricoStatusTarefa[] @relation("HistoricoStatusAnterior")
+  historicoNovo       HistoricoStatusTarefa[] @relation("HistoricoStatusNovo")
+
+  @@index([ordem], map: "idx_status_tarefa_ordem")
+  @@map("status_tarefa")
+}
+
+model Tarefa {
+  id                 String     @id @default(uuid()) @db.Uuid
+  tenantId           String     @map("tenant_id") @db.Uuid
+  titulo             String     @db.VarChar(255)
+  descricao          String?    @db.Text
+  responsavelId      String     @map("responsavel_id") @db.Uuid
+  criadorId          String     @map("criador_id") @db.Uuid
+  prioridade         Prioridade
+  status             String     @db.VarChar(60)
+  dataLimite         DateTime?  @map("data_limite") @db.Date
+  dataCriacao        DateTime   @default(now()) @map("data_criacao") @db.Timestamptz(6)
+  dataUltimaEdicao   DateTime?  @map("data_ultima_edicao") @db.Timestamptz(6)
+  ultimoEditorId     String?    @map("ultimo_editor_id") @db.Uuid
+  dataConclusao      DateTime?  @map("data_conclusao") @db.Timestamptz(6)
+  dataExclusao       DateTime?  @map("data_exclusao") @db.Timestamptz(6)
+
+  tenant             Tenant                  @relation(fields: [tenantId], references: [id])
+  colunaStatus       StatusTarefa            @relation(fields: [status], references: [chave])
+  responsavel        Usuario                 @relation("TarefaResponsavel", fields: [responsavelId], references: [id])
+  criador            Usuario                 @relation("TarefaCriador", fields: [criadorId], references: [id])
+  ultimoEditor       Usuario?                @relation("TarefaUltimoEditor", fields: [ultimoEditorId], references: [id])
+  historicoStatus    HistoricoStatusTarefa[]
+
+  @@index([tenantId, status], map: "idx_tarefas_tenant_status")
+  @@index([tenantId, responsavelId], map: "idx_tarefas_tenant_responsavel")
+  @@index([tenantId, dataLimite], map: "idx_tarefas_tenant_data_limite")
+  @@index([tenantId, prioridade], map: "idx_tarefas_tenant_prioridade")
+  @@index([dataCriacao], map: "idx_tarefas_data_criacao")
+  @@map("tarefas")
+}
+
+model HistoricoStatusTarefa {
+  id              String   @id @default(uuid()) @db.Uuid
+  tarefaId        String   @map("tarefa_id") @db.Uuid
+  tenantId        String   @map("tenant_id") @db.Uuid
+  statusAnterior  String   @map("status_anterior") @db.VarChar(60)
+  statusNovo      String   @map("status_novo") @db.VarChar(60)
+  dataTransicao   DateTime @default(now()) @map("data_transicao") @db.Timestamptz(6)
+  executorId      String   @map("executor_id") @db.Uuid
+
+  tarefa          Tarefa       @relation(fields: [tarefaId], references: [id])
+  tenant          Tenant       @relation(fields: [tenantId], references: [id])
+  executor        Usuario      @relation(fields: [executorId], references: [id])
+  colunaAnterior  StatusTarefa @relation("HistoricoStatusAnterior", fields: [statusAnterior], references: [chave])
+  colunaNova      StatusTarefa @relation("HistoricoStatusNovo", fields: [statusNovo], references: [chave])
+
+  @@index([tarefaId], map: "idx_historico_tarefa_id")
+  @@index([tenantId, dataTransicao], map: "idx_historico_tenant_data_transicao")
+  @@index([tenantId, executorId], map: "idx_historico_tenant_executor")
+  @@index([dataTransicao], map: "idx_historico_data_transicao")
+  @@map("historico_status_tarefas")
+}
+
+model TokenRecuperacaoSenha {
+  id           String    @id @default(uuid()) @db.Uuid
+  usuarioId    String    @map("usuario_id") @db.Uuid
+  tokenHash    String    @unique @map("token_hash") @db.VarChar(255)
+  dataCriacao  DateTime  @default(now()) @map("data_criacao") @db.Timestamptz(6)
+  dataExpiracao DateTime @map("data_expiracao") @db.Timestamptz(6)
+  dataUso      DateTime? @map("data_uso") @db.Timestamptz(6)
+
+  usuario      Usuario   @relation(fields: [usuarioId], references: [id])
+
+  @@index([usuarioId], map: "idx_tokens_recuperacao_usuario")
+  @@index([dataExpiracao], map: "idx_tokens_recuperacao_expiracao")
+  @@map("tokens_recuperacao_senha")
+}
+
+model TrilhaAuditoria {
+  id             String   @id @default(uuid()) @db.Uuid
+  tenantId       String?  @map("tenant_id") @db.Uuid
+  executorId     String?  @map("executor_id") @db.Uuid
+  tipoOperacao   String   @map("tipo_operacao") @db.VarChar(120)
+  recursoTipo    String   @map("recurso_tipo") @db.VarChar(60)
+  recursoId      String?  @map("recurso_id") @db.Uuid
+  resultado      String   @db.VarChar(30)
+  motivo         String?  @db.VarChar(255)
+  dadosAntes     Json?    @map("dados_antes")
+  dadosDepois    Json?    @map("dados_depois")
+  enderecoIp     String?  @map("endereco_ip") @db.VarChar(60)
+  dataOcorrencia DateTime @default(now()) @map("data_ocorrencia") @db.Timestamptz(6)
+
+  tenant         Tenant?  @relation(fields: [tenantId], references: [id])
+  executor       Usuario? @relation(fields: [executorId], references: [id])
+
+  @@index([tenantId, dataOcorrencia], map: "idx_auditoria_tenant_data")
+  @@index([executorId], map: "idx_auditoria_executor")
+  @@index([tipoOperacao], map: "idx_auditoria_operacao")
+  @@map("trilha_auditoria")
+}
